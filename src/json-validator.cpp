@@ -268,7 +268,13 @@ public:
 		json_validator validator(loader_, [](const std::string &, const std::string &) {});
 		validator.set_default_dialect(default_dialect_);
 		validator.set_validation_limits(limits_);
-		validator.set_root_schema(json{{"$ref", uri}});
+		json meta;
+		try {
+			load_schema(uri, meta);
+		} catch (const std::exception &error) {
+			throw std::invalid_argument("unsupported schema dialect " + uri + ": " + error.what());
+		}
+		validator.set_root_schema(meta);
 		validator.validate(value);
 	}
 	const validation_limits &limits() const { return limits_; }
