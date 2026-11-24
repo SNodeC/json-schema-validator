@@ -74,9 +74,25 @@ public:
 		resource_set_ = true;
 	}
 
-	virtual const json &default_value(const json::json_pointer &, const json &, error_handler &) const
+	virtual std::shared_ptr<schema> default_reference(const json::json_pointer &, const json &, error_handler &) const
 	{
-		return default_value_;
+		return nullptr;
+	}
+
+	const json &default_value(const json::json_pointer &ptr, const json &instance, error_handler &e) const
+	{
+		const json *result = &default_value_;
+		const schema *current = this;
+		std::shared_ptr<schema> target;
+		std::set<const schema *> visited;
+		while (current && result->is_null() && visited.insert(current).second) {
+			result = &current->default_value_;
+			if (result->is_null()) {
+				target = current->default_reference(ptr, instance, e);
+				current = target.get();
+			}
+		}
+		return *result;
 	}
 
 	void set_default_value(const json &v) { default_value_ = v; }
@@ -98,27 +114,13 @@ class schema_ref : public schema
 	std::string dynamic_resource_;
 	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &) const final;
 
-	const json &default_value(const json::json_pointer &ptr, const json &instance, error_handler &e) const override final
+	std::shared_ptr<schema> default_reference(const json::json_pointer &ptr, const json &instance, error_handler &e) const final
 	{
-		const json *result = &default_value_;
-		const schema_ref *reference = this;
-		std::set<const schema_ref *> visited;
-		while (reference && result->is_null() && visited.insert(reference).second) {
-			result = &reference->default_value_;
-			if (result->is_null()) {
-				auto target = reference->target_.lock();
-				if (target) {
-					reference = dynamic_cast<const schema_ref *>(target.get());
-					if (!reference) {
-						result = &target->default_value(ptr, instance, e);
-					}
-				} else {
-					e.error(ptr, instance, "unresolved or freed schema-reference " + reference->id_);
-					reference = nullptr;
-				}
-			}
+		auto target = target_.lock();
+		if (!target) {
+			e.error(ptr, instance, "unresolved or freed schema-reference " + id_);
 		}
-		return *result;
+		return target;
 	}
 
 protected:
@@ -815,6 +817,11 @@ class type_schema : public schema
 	}
 
 protected:
+	std::shared_ptr<schema> default_reference(const json::json_pointer &, const json &, error_handler &) const final
+	{
+		return reference_;
+	}
+
 	virtual std::shared_ptr<schema> make_for_default_(
 	    std::shared_ptr<::schema> & /* sch */,
 	    root_schema * /* root */,

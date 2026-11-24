@@ -99,6 +99,16 @@ int main()
 		compile_exhausted = true;
 	}
 	ok = ok && compile_exhausted;
+	json_validator defaults;
+	defaults.set_default_dialect(modern);
+	defaults.set_root_schema(json::parse(R"({
+		"properties":{"mqtt":{"$ref":"#/$defs/mqtt"}},
+		"$defs":{"mqtt":{"type":"object","default":{"client_id":""}}}
+	})"));
+	const json empty = json::object();
+	ok = empty.patch(defaults.validate(empty)) == json{{"mqtt", {{"client_id", ""}}}} && ok;
+	defaults.set_root_schema(json::parse(R"({"properties":{"loop":{"$ref":"#/properties/loop"}}})"));
+	ok = defaults.validate(empty).empty() && ok;
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}
