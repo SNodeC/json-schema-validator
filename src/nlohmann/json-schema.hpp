@@ -131,6 +131,12 @@ namespace json_schema
 
 extern JSON_SCHEMA_VALIDATOR_API json draft7_schema_builtin;
 
+struct validation_limits {
+	std::size_t max_depth = 256;
+	std::size_t max_evaluations = 100000;
+	std::size_t max_schemas = 10000;
+};
+
 enum class schema_dialect {
 	draft7,
 	draft2020_12
@@ -189,6 +195,7 @@ public:
 
 	// Applies to subsequently compiled schemas without a declared $schema.
 	void set_default_dialect(schema_dialect);
+	void set_validation_limits(const validation_limits &);
 
 	// insert and set the root-schema
 	void set_root_schema(const json &);

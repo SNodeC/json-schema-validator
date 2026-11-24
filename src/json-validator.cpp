@@ -35,11 +35,19 @@ using namespace nlohmann::json_schema;
 namespace
 {
 
+struct validation_context {
+	std::size_t depth = 0;
+	std::size_t evaluations = 0;
+	std::vector<std::string> dynamic_scope;
+};
+
 class schema
 {
 protected:
 	root_schema *root_;
 	json default_value_ = nullptr;
+	std::string resource_;
+	bool resource_set_ = false;
 
 protected:
 	virtual std::shared_ptr<schema> make_for_default_(
@@ -57,7 +65,14 @@ public:
 	schema(root_schema *root)
 	    : root_(root) {}
 
-	virtual void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const = 0;
+	virtual void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const = 0;
+
+	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const;
+	void set_resource(const std::string &resource)
+	{
+		resource_ = resource;
+		resource_set_ = true;
+	}
 
 	virtual const json &default_value(const json::json_pointer &, const json &, error_handler &) const
 	{
@@ -79,15 +94,9 @@ class schema_ref : public schema
 	std::shared_ptr<schema> target_strong_; // for references to references keep also the shared_ptr because
 	                                        // no one else might use it after resolving
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const final
-	{
-		auto target = target_.lock();
-
-		if (target)
-			target->validate(ptr, instance, patch, e);
-		else
-			e.error(ptr, instance, "unresolved or freed schema-reference " + id_);
-	}
+	std::string dynamic_name_;
+	std::string dynamic_resource_;
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const final;
 
 	const json &default_value(const json::json_pointer &ptr, const json &instance, error_handler &e) const override final
 	{
@@ -123,6 +132,11 @@ public:
 	    : schema(root), id_(id) {}
 
 	const std::string &id() const { return id_; }
+	void set_dynamic(const json_uri &uri)
+	{
+		dynamic_name_ = uri.identifier();
+		dynamic_resource_ = uri.location();
+	}
 
 	void set_target(const std::shared_ptr<schema> &target, bool strong = false)
 	{
@@ -141,6 +155,9 @@ namespace json_schema
 
 class root_schema
 {
+	validation_limits limits_;
+	std::size_t schema_count_ = 0;
+	std::map<std::string, std::map<std::string, std::weak_ptr<schema>>> dynamic_anchors_;
 	schema_dialect default_dialect_ = schema_dialect::draft7;
 	schema_dialect dialect_ = schema_dialect::draft7;
 	schema_loader loader_;
@@ -151,6 +168,7 @@ class root_schema
 
 	struct schema_file {
 		std::map<std::string, std::shared_ptr<schema>> schemas;
+		std::vector<std::shared_ptr<schema_ref>> references;
 		std::map<std::string, std::shared_ptr<schema_ref>> unresolved; // contains all unresolved references from any other file seen during parsing
 		json unknown_keywords;
 	};
@@ -179,6 +197,30 @@ public:
 	}
 
 	void set_default_dialect(schema_dialect dialect) { default_dialect_ = dialect; }
+	void set_validation_limits(const validation_limits &limits) { limits_ = limits; }
+	const validation_limits &limits() const { return limits_; }
+	void count_schema()
+	{
+		if (++schema_count_ > limits_.max_schemas) {
+			throw std::invalid_argument("schema compilation limit exceeded");
+		}
+	}
+	void insert_dynamic(const std::string &resource, const std::string &name, const std::shared_ptr<schema> &value)
+	{
+		dynamic_anchors_[resource][name] = value;
+	}
+	std::shared_ptr<schema> dynamic_target(const std::string &resource, const std::string &name) const
+	{
+		std::shared_ptr<schema> result;
+		const auto file = dynamic_anchors_.find(resource);
+		if (file != dynamic_anchors_.end()) {
+			const auto anchor = file->second.find(name);
+			if (anchor != file->second.end()) {
+				result = anchor->second.lock();
+			}
+		}
+		return result;
+	}
 	schema_dialect dialect() const { return dialect_; }
 	void set_dialect(schema_dialect dialect) { dialect_ = dialect; }
 
@@ -265,6 +307,7 @@ public:
 		auto ref = file.unresolved.insert(r,
 		                                  {uri.fragment(), std::make_shared<schema_ref>(uri.to_string(), this)})
 		               ->second; // unresolved, create reference
+		file.references.push_back(ref);
 
 		// referencing an unknown keyword, turn it into schema
 		//
@@ -282,6 +325,8 @@ public:
 	void set_root_schema(json sch)
 	{
 		files_.clear();
+		dynamic_anchors_.clear();
+		schema_count_ = 0;
 		dialect_ = default_dialect_;
 		root_ = schema::make(sch, this, {}, {{"#"}});
 
@@ -344,7 +389,7 @@ public:
 	              const json &instance,
 	              json_patch &patch,
 	              error_handler &e,
-	              const json_uri &initial) const
+	              const json_uri &initial, validation_context &context) const
 	{
 		if (!root_) {
 			e.error(ptr, "", "no root schema has yet been set for validating an instance");
@@ -364,7 +409,7 @@ public:
 			return;
 		}
 
-		sch->second->validate(ptr, instance, patch, e);
+		sch->second->validate(ptr, instance, patch, e, context);
 	}
 };
 
@@ -373,6 +418,50 @@ public:
 
 namespace
 {
+
+void schema::validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const
+{
+	if (context.depth >= root_->limits().max_depth || ++context.evaluations > root_->limits().max_evaluations) {
+		throw std::invalid_argument("schema evaluation limit exceeded");
+	}
+	const bool enter_resource = resource_set_ && (context.dynamic_scope.empty() || context.dynamic_scope.back() != resource_);
+	if (enter_resource) {
+		context.dynamic_scope.push_back(resource_);
+	}
+	++context.depth;
+	struct scope_exit {
+		validation_context &context;
+		bool resource;
+		~scope_exit()
+		{
+			--context.depth;
+			if (resource) {
+				context.dynamic_scope.pop_back();
+			}
+		}
+	} scope{context, enter_resource};
+	validate_(ptr, instance, patch, e, context);
+}
+
+void schema_ref::validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const
+{
+	auto target = target_.lock();
+	if (!dynamic_name_.empty() && root_->dynamic_target(dynamic_resource_, dynamic_name_)) {
+		bool found = false;
+		for (std::size_t i = 0; i < context.dynamic_scope.size() && !found; ++i) {
+			auto dynamic = root_->dynamic_target(context.dynamic_scope[i], dynamic_name_);
+			if (dynamic) {
+				target = std::move(dynamic);
+				found = true;
+			}
+		}
+	}
+	if (target) {
+		target->validate(ptr, instance, patch, e, context);
+	} else {
+		e.error(ptr, instance, "unresolved or freed schema-reference " + id_);
+	}
+}
 
 class first_error_handler : public error_handler
 {
@@ -399,10 +488,10 @@ class logical_not : public schema
 {
 	std::shared_ptr<schema> subschema_;
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const final
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const final
 	{
 		first_error_handler esub;
-		subschema_->validate(ptr, instance, patch, esub);
+		subschema_->validate(ptr, instance, patch, esub, context);
 
 		if (!esub)
 			e.error(ptr, instance, "the subschema has succeeded, but it is required to not validate");
@@ -454,7 +543,7 @@ class logical_combination : public schema
 {
 	std::vector<std::shared_ptr<schema>> subschemata_;
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const final
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const final
 	{
 		size_t count = 0;
 		logical_combination_error_handler error_summary;
@@ -463,7 +552,7 @@ class logical_combination : public schema
 			const std::shared_ptr<schema> &s = subschemata_[index];
 			logical_combination_error_handler esub;
 			auto oldPatchSize = patch.get_json().size();
-			s->validate(ptr, instance, patch, esub);
+			s->validate(ptr, instance, patch, esub, context);
 			if (!esub)
 				count++;
 			else {
@@ -546,17 +635,17 @@ class type_schema : public schema
 
 	std::shared_ptr<schema> if_, then_, else_;
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const override final
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const override final
 	{
 		if (reference_) {
-			reference_->validate(ptr, instance, patch, e);
+			reference_->validate(ptr, instance, patch, e, context);
 		}
 
 		// depending on the type of instance run the type specific validator - if present
 		auto type = type_[static_cast<uint8_t>(instance.type())];
 
 		if (type)
-			type->validate(ptr, instance, patch, e);
+			type->validate(ptr, instance, patch, e, context);
 		else
 			e.error(ptr, instance, "unexpected instance type");
 
@@ -577,18 +666,18 @@ class type_schema : public schema
 			e.error(ptr, instance, "instance not const");
 
 		for (auto l : logic_)
-			l->validate(ptr, instance, patch, e);
+			l->validate(ptr, instance, patch, e, context);
 
 		if (if_ && (then_ || else_)) {
 			first_error_handler err;
 
-			if_->validate(ptr, instance, patch, err);
+			if_->validate(ptr, instance, patch, err, context);
 			if (!err) {
 				if (then_)
-					then_->validate(ptr, instance, patch, e);
+					then_->validate(ptr, instance, patch, e, context);
 			} else {
 				if (else_)
-					else_->validate(ptr, instance, patch, e);
+					else_->validate(ptr, instance, patch, e, context);
 			}
 		}
 
@@ -766,7 +855,7 @@ class string : public schema
 		return len;
 	}
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
 	{
 		if (minLength_.first) {
 			if (utf8_length(instance.get<std::string>()) < minLength_.second) {
@@ -906,7 +995,7 @@ class numeric : public schema
 		return std::fabs(res) > std::fabs(eps);
 	}
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
 	{
 		T value = instance.get<T>(); // conversion of json to value_type
 
@@ -979,7 +1068,7 @@ public:
 class null : public schema
 {
 	// only used for null instances (type_schema), nothing to check
-	void validate(const json::json_pointer &, const json &, json_patch &, error_handler &) const override {}
+	void validate_(const json::json_pointer &, const json &, json_patch &, error_handler &, validation_context &) const override {}
 
 public:
 	null(json &, root_schema *root)
@@ -988,7 +1077,7 @@ public:
 
 class boolean_type : public schema
 {
-	void validate(const json::json_pointer &, const json &, json_patch &, error_handler &) const override {}
+	void validate_(const json::json_pointer &, const json &, json_patch &, error_handler &, validation_context &context) const override {}
 
 public:
 	boolean_type(json &, root_schema *root)
@@ -998,7 +1087,7 @@ public:
 class boolean : public schema
 {
 	bool true_;
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
 	{
 		if (!true_) { // false schema
 			// empty array
@@ -1034,7 +1123,7 @@ class required : public schema
 {
 	const std::vector<std::string> required_;
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e) const override final
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override final
 	{
 		for (auto &r : required_)
 			if (instance.find(r) == instance.end())
@@ -1062,7 +1151,7 @@ class object : public schema
 
 	std::shared_ptr<schema> propertyNames_;
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const override
 	{
 		if (maxProperties_.first && instance.size() > maxProperties_.second)
 			e.error(ptr, instance, "too many properties");
@@ -1077,14 +1166,14 @@ class object : public schema
 		// for each property in instance
 		for (auto &p : instance.items()) {
 			if (propertyNames_)
-				propertyNames_->validate(ptr, p.key(), patch, e);
+				propertyNames_->validate(ptr, p.key(), patch, e, context);
 
 			bool a_prop_or_pattern_matched = false;
 			auto schema_p = properties_.find(p.key());
 			// check if it is in "properties"
 			if (schema_p != properties_.end()) {
 				a_prop_or_pattern_matched = true;
-				schema_p->second->validate(ptr / p.key(), p.value(), patch, e);
+				schema_p->second->validate(ptr / p.key(), p.value(), patch, e, context);
 			}
 
 #ifndef NO_STD_REGEX
@@ -1092,14 +1181,14 @@ class object : public schema
 			for (auto &schema_pp : patternProperties_)
 				if (REGEX_NAMESPACE::regex_search(p.key(), schema_pp.first)) {
 					a_prop_or_pattern_matched = true;
-					schema_pp.second->validate(ptr / p.key(), p.value(), patch, e);
+					schema_pp.second->validate(ptr / p.key(), p.value(), patch, e, context);
 				}
 #endif
 
 			// check additionalProperties as a last resort
 			if (!a_prop_or_pattern_matched && additionalProperties_) {
 				first_error_handler additional_prop_err;
-				additionalProperties_->validate(ptr / p.key(), p.value(), patch, additional_prop_err);
+				additionalProperties_->validate(ptr / p.key(), p.value(), patch, additional_prop_err, context);
 				if (additional_prop_err)
 					e.error(ptr, instance, "validation failed for additional property '" + p.key() + "': " + additional_prop_err.message_);
 			}
@@ -1118,8 +1207,8 @@ class object : public schema
 
 		for (auto &dep : dependencies_) {
 			auto prop = instance.find(dep.first);
-			if (prop != instance.end())                                    // if dependency-property is present in instance
-				dep.second->validate(ptr / dep.first, instance, patch, e); // validate
+			if (prop != instance.end())                                             // if dependency-property is present in instance
+				dep.second->validate(ptr / dep.first, instance, patch, e, context); // validate
 		}
 	}
 
@@ -1229,7 +1318,7 @@ class array : public schema
 	std::size_t minContains_ = 1;
 	std::pair<bool, std::size_t> maxContains_{false, 0};
 
-	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const override
 	{
 		if (maxItems_.first && instance.size() > maxItems_.second)
 			e.error(ptr, instance, "array has too many items");
@@ -1248,7 +1337,7 @@ class array : public schema
 		size_t index = 0;
 		if (items_schema_)
 			for (auto &i : instance) {
-				items_schema_->validate(ptr / index, i, patch, e);
+				items_schema_->validate(ptr / index, i, patch, e, context);
 				index++;
 			}
 		else {
@@ -1265,7 +1354,7 @@ class array : public schema
 				if (!item_validator)
 					break;
 
-				item_validator->validate(ptr / index, i, patch, e);
+				item_validator->validate(ptr / index, i, patch, e, context);
 				++index;
 			}
 		}
@@ -1274,7 +1363,7 @@ class array : public schema
 			std::size_t count = 0;
 			for (auto &item : instance) {
 				first_error_handler local_e;
-				contains_->validate(ptr / count, item, patch, local_e);
+				contains_->validate(ptr / count, item, patch, local_e, context);
 				if (!local_e) {
 					++count;
 				}
@@ -1401,6 +1490,7 @@ std::shared_ptr<schema> schema::make(json &schema,
                                      const std::vector<std::string> &keys,
                                      std::vector<nlohmann::json_uri> uris)
 {
+	root->count_schema();
 	struct dialect_scope {
 		root_schema *root;
 		schema_dialect previous;
@@ -1431,6 +1521,12 @@ std::shared_ptr<schema> schema::make(json &schema,
 			uri = uri.append(key);
 
 	std::shared_ptr<::schema> sch;
+	std::string anchor;
+	std::string dynamic_anchor;
+	if (schema.is_object() && root->dialect() == schema_dialect::draft2020_12) {
+		anchor = schema.value("$anchor", "");
+		dynamic_anchor = schema.value("$dynamicAnchor", "");
+	}
 
 	// boolean schema
 	if (schema.type() == json::value_t::boolean)
@@ -1439,7 +1535,7 @@ std::shared_ptr<schema> schema::make(json &schema,
 
 		auto attr = schema.find("$id"); // if $id is present, this schema can be referenced by this ID
 		                                // as an additional URI
-		if (attr != schema.end()) {
+		if (attr != schema.end() && !(root->dialect() == schema_dialect::draft7 && schema.contains("$ref"))) {
 			// resolved against the current base URI, a relative $id can be the URI of the loaded file itself
 			auto id = uris.back().derive(attr.value().get<std::string>());
 			auto existing = std::find(uris.begin(), uris.end(), id);
@@ -1459,16 +1555,21 @@ std::shared_ptr<schema> schema::make(json &schema,
 			}
 			return false;
 		};
-		if (!findDefinitions("$defs")) {
-			findDefinitions("definitions");
-		}
+		findDefinitions("$defs");
+		findDefinitions("definitions");
 
-		attr = schema.find("$ref");
+		const std::string reference_key = root->dialect() == schema_dialect::draft2020_12 && schema.contains("$dynamicRef") ? "$dynamicRef" : "$ref";
+		attr = schema.find(reference_key);
 		if (attr != schema.end()) { // this schema is a reference
 			// the last one on the uri-stack is the last id seen before coming here,
 			// so this is the origial URI for this reference, the $ref-value has thus be resolved from it
 			auto id = uris.back().derive(attr.value().get<std::string>());
-			sch = root->get_or_create_ref(id);
+			auto reference = std::make_shared<schema_ref>(id.to_string(), root);
+			reference->set_target(root->get_or_create_ref(id));
+			if (reference_key == "$dynamicRef") {
+				reference->set_dynamic(id);
+			}
+			sch = reference;
 			if (root->dialect() == schema_dialect::draft2020_12) {
 				schema.erase(attr);
 				auto sibling = std::make_shared<type_schema>(schema, root, uris);
@@ -1499,6 +1600,15 @@ std::shared_ptr<schema> schema::make(json &schema,
 		schema.erase("description");
 	} else {
 		throw std::invalid_argument("invalid JSON-type for a schema for " + uris[0].to_string() + ", expected: boolean or object");
+	}
+
+	sch->set_resource(uris.back().location());
+	if (!anchor.empty()) {
+		root->insert(uris.back().derive("#" + anchor), sch);
+	}
+	if (!dynamic_anchor.empty()) {
+		root->insert(uris.back().derive("#" + dynamic_anchor), sch);
+		root->insert_dynamic(uris.back().location(), dynamic_anchor, sch);
 	}
 
 	for (auto &uri : uris) { // for all URIs this schema is referenced by
@@ -1564,6 +1674,11 @@ json_validator::json_validator(json_validator &&) = default;
 json_validator::~json_validator() = default;
 json_validator &json_validator::operator=(json_validator &&) = default;
 
+void json_validator::set_validation_limits(const validation_limits &limits)
+{
+	root_->set_validation_limits(limits);
+}
+
 void json_validator::set_default_dialect(schema_dialect dialect)
 {
 	root_->set_default_dialect(dialect);
@@ -1589,7 +1704,8 @@ json json_validator::validate(const json &instance, error_handler &err, const js
 {
 	json::json_pointer ptr;
 	json_patch patch;
-	root_->validate(ptr, instance, patch, err, initial_uri);
+	validation_context context;
+	root_->validate(ptr, instance, patch, err, initial_uri, context);
 	return patch;
 }
 

@@ -36,6 +36,35 @@ int main()
 	ok = ok && accepts(siblings, 1) && !accepts(siblings, 1, modern) && accepts(siblings, 2, modern);
 	const json dependencies = {{"dependentRequired", {{"a", {"b"}}}}, {"dependentSchemas", {{"a", {{"required", {"c"}}}}}}};
 	ok = ok && !accepts(dependencies, {{"a", 1}, {"b", 2}}, modern) && accepts(dependencies, {{"a", 1}, {"b", 2}, {"c", 3}}, modern);
+	const json anchor = {{"$defs", {{"value", {{"$anchor", "value"}, {"type", "integer"}}}}}, {"$ref", "#value"}};
+	ok = ok && accepts(anchor, 1, modern) && !accepts(anchor, "x", modern);
+	const json dynamic = json::parse(R"({
+		"$id":"https://example.test/strict", "$dynamicAnchor":"node",
+		"properties":{"value":{"type":"integer"}}, "$ref":"tree",
+		"$defs":{"tree":{"$id":"tree", "$dynamicAnchor":"node",
+			"properties":{"children":{"items":{"$dynamicRef":"#node"}}}}}
+	})");
+	ok = ok && accepts(dynamic, {{"children", {{{"value", 1}}}}}, modern);
+	ok = ok && !accepts(dynamic, {{"children", {{{"value", "bad"}}}}}, modern);
+	bool unresolved = false;
+	try {
+		accepts({{"$ref", "https://example.invalid/not-loaded"}}, nullptr, modern);
+	} catch (const std::invalid_argument &) {
+		unresolved = true;
+	}
+	ok = ok && unresolved;
+	json_validator bounded;
+	validation_limits limits;
+	limits.max_depth = 16;
+	bounded.set_validation_limits(limits);
+	bounded.set_root_schema(json{{"$ref", "#"}});
+	bool exhausted = false;
+	try {
+		bounded.validate(nullptr);
+	} catch (const std::invalid_argument &) {
+		exhausted = true;
+	}
+	ok = ok && exhausted;
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}

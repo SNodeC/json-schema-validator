@@ -86,7 +86,9 @@ void json_uri::update(const std::string &uri)
 	if (location.size()) { // a location part has been found
 
 		// if it is an URN take it as it is
-		if (location.find("urn:") == 0) {
+		const auto colon = location.find(':');
+		const auto slash = location.find('/');
+		if (colon != std::string::npos && (slash == std::string::npos || colon < slash) && location.compare(colon, 3, "://") != 0) {
 			urn_ = location;
 
 			// and clear URL members
@@ -107,10 +109,9 @@ void json_uri::update(const std::string &uri)
 				pos = 3 + proto; // 3 == "://"
 
 				auto authority = location.find("/", pos);
-				if (authority != std::string::npos) { // and the hostname (no proto without hostname)
-					authority_ = location.substr(pos, authority - pos);
-					pos = authority;
-				}
+				authority_ = location.substr(pos, authority == std::string::npos ? authority : authority - pos);
+				pos = authority == std::string::npos ? location.size() : authority;
+				path_.clear();
 			}
 
 			auto path = location.substr(pos);
