@@ -834,7 +834,14 @@ protected:
 	};
 
 public:
-	void set_reference(std::shared_ptr<schema> reference) { reference_ = std::move(reference); }
+	void add_reference(std::shared_ptr<schema> reference)
+	{
+		if (reference_) {
+			logic_.push_back(std::move(reference));
+		} else {
+			reference_ = std::move(reference);
+		}
+	}
 
 	type_schema(json &sch,
 	            root_schema *root,
@@ -1730,28 +1737,29 @@ std::shared_ptr<schema> schema::make(json &schema,
 		findDefinitions("$defs");
 		findDefinitions("definitions");
 
-		const std::string reference_key = root->dialect() == schema_dialect::draft2020_12 && schema.contains("$dynamicRef") ? "$dynamicRef" : "$ref";
-		attr = schema.find(reference_key);
-		if (attr != schema.end()) { // this schema is a reference
-			// the last one on the uri-stack is the last id seen before coming here,
-			// so this is the origial URI for this reference, the $ref-value has thus be resolved from it
-			auto id = uris.back().derive(attr.value().get<std::string>());
-			auto reference = std::make_shared<schema_ref>(id.to_string(), root);
-			reference->set_target(root->get_or_create_ref(id));
-			if (reference_key == "$dynamicRef") {
-				reference->set_dynamic(id);
+		std::vector<std::shared_ptr<::schema>> references;
+		for (const std::string reference_key : {"$dynamicRef", "$ref"}) {
+			attr = schema.find(reference_key);
+			if (attr != schema.end() && (reference_key == "$ref" || root->dialect() == schema_dialect::draft2020_12)) {
+				// The latest resource URI is the base for both reference applicators.
+				auto id = uris.back().derive(attr.value().get<std::string>());
+				auto reference = std::make_shared<schema_ref>(id.to_string(), root);
+				reference->set_target(root->get_or_create_ref(id));
+				if (reference_key == "$dynamicRef") {
+					reference->set_dynamic(id);
+				}
+				references.push_back(reference);
+				schema.erase(attr);
 			}
-			sch = reference;
+		}
+		if (!references.empty()) {
+			sch = references.front();
 			if (root->dialect() == schema_dialect::draft2020_12) {
-				schema.erase(attr);
 				auto sibling = std::make_shared<type_schema>(schema, root, uris);
-				sibling->set_reference(sch);
+				for (auto &reference : references) {
+					sibling->add_reference(std::move(reference));
+				}
 				sch = sibling;
-				attr = schema.end();
-			}
-
-			if (attr != schema.end()) {
-				schema.erase(attr);
 			}
 
 			// special case where we break draft-7 and allow overriding of properties when a $ref is used

@@ -39,3 +39,5 @@ optional cross-draft case requests 2019-09, outside the two supported dialects;
 the implementation explicitly rejects it. Existing fixed-case exemptions have
 been removed where the implementation now passes. No expected validity or
 schema in the upstream data was changed.
+
+The separate dialect regression also checks simultaneous `$ref` and `$dynamicRef`: both are applied through the existing applicator path, as required by [2020-12 schema references](https://json-schema.org/draft/2020-12/json-schema-core#section-8.2.3). The official required snapshot does not contain that combination.

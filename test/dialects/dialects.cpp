@@ -109,6 +109,11 @@ int main()
 	ok = empty.patch(defaults.validate(empty)) == json{{"mqtt", {{"client_id", ""}}}} && ok;
 	defaults.set_root_schema(json::parse(R"({"properties":{"loop":{"$ref":"#/properties/loop"}}})"));
 	ok = defaults.validate(empty).empty() && ok;
+	const json both_references = json::parse(R"({
+		"$defs":{"bound":{"$dynamicAnchor":"bound","minimum":2},"kind":{"type":"integer"}},
+		"$ref":"#/$defs/kind", "$dynamicRef":"#bound"
+	})");
+	ok = accepts(both_references, 2, modern) && !accepts(both_references, 1, modern) && !accepts(both_references, 2.5, modern) && ok;
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}
