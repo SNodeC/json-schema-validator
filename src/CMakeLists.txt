@@ -35,21 +35,12 @@ if (("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR
             -Wall -Wextra -Wshadow)
 endif ()
 
-# TODO: gcc support for <4.9 should be removed
-# regex with boost if gcc < 4.9 - default is std::regex
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS "4.9.0")
-        find_package(Boost COMPONENTS regex)
-        if (NOT Boost_FOUND)
-            message(STATUS "GCC less then 4.9 and boost-regex NOT found - no regex used")
-            target_compile_definitions(nlohmann_json_schema_validator PRIVATE -DJSON_SCHEMA_NO_REGEX)
-        else ()
-            message(STATUS "GCC less then 4.9 and boost-regex FOUND - using boost::regex")
-            target_compile_definitions(nlohmann_json_schema_validator PRIVATE -DJSON_SCHEMA_BOOST_REGEX)
-            target_include_directories(nlohmann_json_schema_validator PRIVATE ${Boost_INCLUDE_DIRS})
-            target_link_libraries(nlohmann_json_schema_validator PRIVATE ${Boost_LIBRARIES})
-        endif ()
-    endif ()
+if (PCRE2_FOUND AND JSON_VALIDATOR_USE_PCRE2)
+    target_compile_definitions(nlohmann_json_schema_validator PRIVATE JSON_SCHEMA_PCRE2)
+    target_link_libraries(nlohmann_json_schema_validator PRIVATE PkgConfig::PCRE2)
+    message(STATUS "JsonValidator: PCRE2 UTF/UCP regex backend")
+else ()
+    message(STATUS "JsonValidator: std::regex ECMAScript backend")
 endif ()
 
 target_link_libraries(nlohmann_json_schema_validator PUBLIC

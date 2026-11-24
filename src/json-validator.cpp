@@ -22,15 +22,9 @@ using nlohmann::json_uri;
 using nlohmann::json_schema::root_schema;
 using namespace nlohmann::json_schema;
 
-#ifdef JSON_SCHEMA_BOOST_REGEX
-#	include <boost/regex.hpp>
-#	define REGEX_NAMESPACE boost
-#elif defined(JSON_SCHEMA_NO_REGEX)
-#	define NO_STD_REGEX
-#else
-#	include <regex>
-#	define REGEX_NAMESPACE std
-#endif
+#include "json-schema-regex.hpp"
+
+#define REGEX_NAMESPACE json_schema_regex
 
 namespace
 {

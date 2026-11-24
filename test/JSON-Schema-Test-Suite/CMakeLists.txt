@@ -54,9 +54,12 @@ if(JSON_SCHEMA_TEST_SUITE_PATH)
             add_suite_test("${JSON_SCHEMA_TEST_PREFIX}::Optional::Format::${TEST_NAME}" ${TEST_FILE})
         endforeach()
 
+        if (NOT PCRE2_FOUND OR NOT JSON_VALIDATOR_USE_PCRE2)
+            set_tests_properties(JSON-Suite::Optional::non-bmp-regex PROPERTIES WILL_FAIL ON)
+        endif ()
+
         # optional tests which fail completely, single failing test cases are in known-failures.json
         set_tests_properties(
-            JSON-Suite::Optional::non-bmp-regex
 
             JSON-Suite::Optional::ecmascript-regex
             JSON-Suite::Optional::Format::idn-hostname

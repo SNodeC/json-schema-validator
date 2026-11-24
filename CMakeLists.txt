@@ -36,6 +36,13 @@ option(JSON_VALIDATOR_INSTALL "JsonValidator: Install targets" ${PROJECT_IS_TOP_
 option(JSON_VALIDATOR_BUILD_TESTS "JsonValidator: Build tests" ${PROJECT_IS_TOP_LEVEL})
 option(JSON_VALIDATOR_BUILD_EXAMPLES "JsonValidator: Build examples" ${PROJECT_IS_TOP_LEVEL})
 option(JSON_VALIDATOR_SHARED_LIBS "JsonValidator: Build as shared library" ${BUILD_SHARED_LIBS})
+option(JSON_VALIDATOR_USE_PCRE2 "JsonValidator: Use PCRE2 when available" ON)
+if (JSON_VALIDATOR_USE_PCRE2)
+    find_package(PkgConfig QUIET)
+    if (PkgConfig_FOUND)
+        pkg_check_modules(PCRE2 QUIET IMPORTED_TARGET libpcre2-8)
+    endif ()
+endif ()
 option(JSON_VALIDATOR_TEST_COVERAGE "JsonValidator: Build with test coverage" OFF)
 mark_as_advanced(JSON_VALIDATOR_TEST_COVERAGE)
 # Get a default JSON_FETCH_VERSION from environment variables to workaround the CI

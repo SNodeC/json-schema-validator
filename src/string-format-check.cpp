@@ -1,5 +1,6 @@
 #include <nlohmann/json-schema.hpp>
 
+#include "json-schema-regex.hpp"
 #include "smtp-address-validator.hpp"
 
 #include <algorithm>
@@ -399,7 +400,7 @@ void default_string_format_check(const std::string &format, const std::string &v
 		}
 	} else if (format == "regex") {
 		try {
-			REGEX_NAMESPACE::regex re(value, std::regex::ECMAScript);
+			json_schema_regex::regex re(value);
 		} catch (std::exception &exception) {
 			throw;
 		}

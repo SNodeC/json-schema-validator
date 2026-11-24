@@ -57,38 +57,6 @@ std::string remove_dot_segments(const std::string &path)
 namespace nlohmann
 {
 
-static std::string normalize_path(const std::string &value)
-{
-	const auto query = value.find('?');
-	const auto path = value.substr(0, query);
-	std::istringstream input(path);
-	std::vector<std::string> segments;
-	std::string segment;
-	while (std::getline(input, segment, '/')) {
-		if (segment == "..") {
-			if (segments.size() > 1) {
-				segments.pop_back();
-			}
-		} else if (segment != ".") {
-			segments.push_back(segment);
-		}
-	}
-	std::string normalized;
-	for (std::size_t i = 0; i < segments.size(); ++i) {
-		if (i != 0) {
-			normalized += '/';
-		}
-		normalized += segments[i];
-	}
-	if (!path.empty() && (path.back() == '/' || path.size() >= 2 && path.compare(path.size() - 2, 2, "/.") == 0 || path.size() >= 3 && path.compare(path.size() - 3, 3, "/..") == 0) && (normalized.empty() || normalized.back() != '/')) {
-		normalized += '/';
-	}
-	if (query != std::string::npos) {
-		normalized += value.substr(query);
-	}
-	return normalized;
-}
-
 void json_uri::update(const std::string &uri)
 {
 	std::string pointer = ""; // default pointer is document-root
@@ -164,7 +132,6 @@ void json_uri::update(const std::string &uri)
 		}
 	}
 
-	path_ = normalize_path(path_);
 	pointer_ = ""_json_pointer;
 	identifier_ = "";
 

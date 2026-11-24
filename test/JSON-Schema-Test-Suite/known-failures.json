@@ -1,18 +1,5 @@
 [
     {
-        "file": "ref.json",
-        "group": "$ref prevents a sibling $id from changing the base uri",
-        "reason": "the base URI of a $ref is changed by a sibling $id, as in draft 2019-09 and later"
-    },
-    {
-        "file": "type.json",
-        "group": "integer type matches integers",
-        "tests": [
-            "a float with zero fractional part is an integer"
-        ],
-        "reason": "1.0 is a float for nlohmann::json and not accepted as integer, see #166"
-    },
-    {
         "file": "optional/cross-draft.json",
         "group": "refs to future drafts are processed as future drafts",
         "tests": [
@@ -65,19 +52,6 @@
             "contains \"--\" in the 3rd and 4th position"
         ],
         "reason": "A-labels (xn--) are not decoded, IDNA rules are not checked"
-    },
-    {
-        "file": "optional/format/ecmascript-regex.json",
-        "group": "\\a is not an ECMA 262 control escape",
-        "tests": [
-            "when used as a pattern"
-        ],
-        "reason": "std::regex accepts \\a"
-    },
-    {
-        "file": "optional/format/ecmascript-regex.json",
-        "group": "ECMA 262 named groups and backreferences are valid",
-        "reason": "std::regex implements ECMAScript 3, without named groups"
     },
     {
         "file": "optional/format/ecmascript-regex.json",
