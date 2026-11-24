@@ -65,6 +65,18 @@ int main()
 		exhausted = true;
 	}
 	ok = ok && exhausted;
+	const json evaluated = json::parse(R"({
+		"anyOf":[{"properties":{"a":true}},{"properties":{"b":true}}],
+		"unevaluatedProperties":false
+	})");
+	ok = ok && accepts(evaluated, {{"a", 1}, {"b", 2}}, modern) && !accepts(evaluated, {{"c", 1}}, modern);
+	const json discarded = json::parse(R"({
+		"anyOf":[{"properties":{"a":true},"required":["missing"]},{"properties":{"b":true}}],
+		"unevaluatedProperties":false
+	})");
+	ok = ok && !accepts(discarded, {{"a", 1}, {"b", 2}}, modern);
+	const json evaluated_items = {{"contains", {{"type", "integer"}}}, {"unevaluatedItems", false}};
+	ok = ok && accepts(evaluated_items, {1, 2}, modern) && !accepts(evaluated_items, {1, "x"}, modern);
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}

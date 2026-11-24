@@ -654,6 +654,8 @@ class type_schema : public schema
 	std::pair<bool, json> enum_, const_;
 	std::vector<std::shared_ptr<schema>> logic_;
 	std::shared_ptr<schema> reference_;
+	std::shared_ptr<schema> unevaluated_properties_;
+	std::shared_ptr<schema> unevaluated_items_;
 
 	static std::shared_ptr<schema> make(json &schema,
 	                                    json::value_t type,
@@ -671,6 +673,12 @@ class type_schema : public schema
 
 		// depending on the type of instance run the type specific validator - if present
 		auto type = type_[static_cast<uint8_t>(instance.type())];
+		if (!type && instance.is_number_float()) {
+			const double value = instance.get<double>();
+			if (std::isfinite(value) && std::floor(value) == value) {
+				type = type_[static_cast<uint8_t>(json::value_t::number_integer)];
+			}
+		}
 
 		if (type)
 			type->validate(ptr, instance, patch, e, context);
@@ -696,7 +704,7 @@ class type_schema : public schema
 		for (auto l : logic_)
 			l->validate(ptr, instance, patch, e, context);
 
-		if (if_ && (then_ || else_)) {
+		if (if_) {
 			first_error_handler err;
 
 			if_->validate(ptr, instance, patch, err, context);
@@ -706,6 +714,22 @@ class type_schema : public schema
 			} else {
 				if (else_)
 					else_->validate(ptr, instance, patch, e, context);
+			}
+		}
+		if (unevaluated_properties_ && instance.is_object()) {
+			for (const auto &property : instance.items()) {
+				if (context.frames.back()[ptr.to_string()].properties.count(property.key()) == 0) {
+					unevaluated_properties_->validate(ptr / property.key(), property.value(), patch, e, context);
+					context.frames.back()[ptr.to_string()].properties.insert(property.key());
+				}
+			}
+		}
+		if (unevaluated_items_ && instance.is_array()) {
+			for (std::size_t index = 0; index < instance.size(); ++index) {
+				if (context.frames.back()[ptr.to_string()].items.count(index) == 0) {
+					unevaluated_items_->validate(ptr / index, instance[index], patch, e, context);
+					context.frames.back()[ptr.to_string()].items.insert(index);
+				}
 			}
 		}
 
@@ -735,6 +759,16 @@ public:
 	            const std::vector<nlohmann::json_uri> &uris)
 	    : schema(root), type_(static_cast<uint8_t>(json::value_t::discarded) + 1)
 	{
+		if (root->dialect() == schema_dialect::draft2020_12) {
+			if (sch.contains("unevaluatedProperties")) {
+				unevaluated_properties_ = schema::make(sch.at("unevaluatedProperties"), root, {"unevaluatedProperties"}, uris);
+				sch.erase("unevaluatedProperties");
+			}
+			if (sch.contains("unevaluatedItems")) {
+				unevaluated_items_ = schema::make(sch.at("unevaluatedItems"), root, {"unevaluatedItems"}, uris);
+				sch.erase("unevaluatedItems");
+			}
+		}
 		// association between JSON-schema-type and NLohmann-types
 		static const struct {
 			const char *name;
