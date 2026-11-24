@@ -1,0 +1,16 @@
+add_executable(official-suite runner.cpp)
+target_link_libraries(official-suite PRIVATE nlohmann_json_schema_validator)
+file(GLOB required_data "${CMAKE_CURRENT_SOURCE_DIR}/data/validation/tests/*.json")
+file(GLOB optional_data "${CMAKE_CURRENT_SOURCE_DIR}/data/validation/tests/optional/*.json")
+set(format_data ${optional_data})
+list(FILTER format_data INCLUDE REGEX "/format-")
+list(FILTER optional_data EXCLUDE REGEX "/format-")
+list(APPEND format_data ${required_data})
+foreach(dialect IN ITEMS 7 2020)
+    foreach(category IN ITEMS required optional format)
+        add_test(NAME official-draft${dialect}-${category}
+                 COMMAND official-suite ${dialect} ${category} ${${category}_data})
+        set_tests_properties(official-draft${dialect}-${category}
+                             PROPERTIES LABELS "official;draft${dialect};${category}")
+    endforeach()
+endforeach()
