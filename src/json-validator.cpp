@@ -35,10 +35,16 @@ using namespace nlohmann::json_schema;
 namespace
 {
 
+struct evaluated_locations {
+	std::set<std::string> properties;
+	std::set<std::size_t> items;
+};
+
 struct validation_context {
 	std::size_t depth = 0;
 	std::size_t evaluations = 0;
 	std::vector<std::string> dynamic_scope;
+	std::vector<std::map<std::string, evaluated_locations>> frames;
 };
 
 class schema
@@ -96,7 +102,7 @@ class schema_ref : public schema
 
 	std::string dynamic_name_;
 	std::string dynamic_resource_;
-	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const final;
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &) const final;
 
 	const json &default_value(const json::json_pointer &ptr, const json &instance, error_handler &e) const override final
 	{
@@ -429,18 +435,38 @@ void schema::validate(const json::json_pointer &ptr, const json &instance, json_
 		context.dynamic_scope.push_back(resource_);
 	}
 	++context.depth;
+	context.frames.emplace_back();
+	struct counting_error_handler : error_handler {
+		error_handler &destination;
+		bool failed = false;
+		explicit counting_error_handler(error_handler &handler) : destination(handler) {}
+		void error(const json::json_pointer &where, const json &value, const std::string &message) override
+		{
+			failed = true;
+			destination.error(where, value, message);
+		}
+	} errors(e);
 	struct scope_exit {
 		validation_context &context;
 		bool resource;
 		~scope_exit()
 		{
 			--context.depth;
+			context.frames.pop_back();
 			if (resource) {
 				context.dynamic_scope.pop_back();
 			}
 		}
 	} scope{context, enter_resource};
-	validate_(ptr, instance, patch, e, context);
+	validate_(ptr, instance, patch, errors, context);
+	if (!errors.failed && context.frames.size() > 1) {
+		auto &parent = context.frames[context.frames.size() - 2];
+		for (const auto &entry : context.frames.back()) {
+			auto &annotations = parent[entry.first];
+			annotations.properties.insert(entry.second.properties.begin(), entry.second.properties.end());
+			annotations.items.insert(entry.second.items.begin(), entry.second.items.end());
+		}
+	}
 }
 
 void schema_ref::validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const
@@ -546,6 +572,7 @@ class logical_combination : public schema
 	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e, validation_context &context) const final
 	{
 		size_t count = 0;
+		bool reported = false;
 		logical_combination_error_handler error_summary;
 
 		for (std::size_t index = 0; index < subschemata_.size(); ++index) {
@@ -560,11 +587,12 @@ class logical_combination : public schema
 				esub.propagate(error_summary, "case#" + std::to_string(index) + "] ");
 			}
 
-			if (is_validate_complete(instance, ptr, e, esub, count, index))
-				return;
+			if (!reported) {
+				reported = is_validate_complete(instance, ptr, e, esub, count, index);
+			}
 		}
 
-		if (count == 0) {
+		if (count == 0 && !reported) {
 			e.error(ptr, instance, "no subschema has succeeded, but one of them is required to validate. Type: " + key + ", number of failed subschemas: " + std::to_string(subschemata_.size()));
 			error_summary.propagate(e, "[combination: " + key + " / ");
 		}
@@ -855,7 +883,7 @@ class string : public schema
 		return len;
 	}
 
-	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override
 	{
 		if (minLength_.first) {
 			if (utf8_length(instance.get<std::string>()) < minLength_.second) {
@@ -995,7 +1023,7 @@ class numeric : public schema
 		return std::fabs(res) > std::fabs(eps);
 	}
 
-	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override
 	{
 		T value = instance.get<T>(); // conversion of json to value_type
 
@@ -1077,7 +1105,7 @@ public:
 
 class boolean_type : public schema
 {
-	void validate_(const json::json_pointer &, const json &, json_patch &, error_handler &, validation_context &context) const override {}
+	void validate_(const json::json_pointer &, const json &, json_patch &, error_handler &, validation_context &) const override {}
 
 public:
 	boolean_type(json &, root_schema *root)
@@ -1087,7 +1115,7 @@ public:
 class boolean : public schema
 {
 	bool true_;
-	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override
 	{
 		if (!true_) { // false schema
 			// empty array
@@ -1123,7 +1151,7 @@ class required : public schema
 {
 	const std::vector<std::string> required_;
 
-	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &context) const override final
+	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override final
 	{
 		for (auto &r : required_)
 			if (instance.find(r) == instance.end())
@@ -1174,6 +1202,7 @@ class object : public schema
 			if (schema_p != properties_.end()) {
 				a_prop_or_pattern_matched = true;
 				schema_p->second->validate(ptr / p.key(), p.value(), patch, e, context);
+				context.frames.back()[ptr.to_string()].properties.insert(p.key());
 			}
 
 #ifndef NO_STD_REGEX
@@ -1182,6 +1211,7 @@ class object : public schema
 				if (REGEX_NAMESPACE::regex_search(p.key(), schema_pp.first)) {
 					a_prop_or_pattern_matched = true;
 					schema_pp.second->validate(ptr / p.key(), p.value(), patch, e, context);
+					context.frames.back()[ptr.to_string()].properties.insert(p.key());
 				}
 #endif
 
@@ -1189,6 +1219,7 @@ class object : public schema
 			if (!a_prop_or_pattern_matched && additionalProperties_) {
 				first_error_handler additional_prop_err;
 				additionalProperties_->validate(ptr / p.key(), p.value(), patch, additional_prop_err, context);
+				context.frames.back()[ptr.to_string()].properties.insert(p.key());
 				if (additional_prop_err)
 					e.error(ptr, instance, "validation failed for additional property '" + p.key() + "': " + additional_prop_err.message_);
 			}
@@ -1207,8 +1238,8 @@ class object : public schema
 
 		for (auto &dep : dependencies_) {
 			auto prop = instance.find(dep.first);
-			if (prop != instance.end())                                             // if dependency-property is present in instance
-				dep.second->validate(ptr / dep.first, instance, patch, e, context); // validate
+			if (prop != instance.end())                                 // if dependency-property is present in instance
+				dep.second->validate(ptr, instance, patch, e, context); // validate
 		}
 	}
 
@@ -1338,7 +1369,7 @@ class array : public schema
 		if (items_schema_)
 			for (auto &i : instance) {
 				items_schema_->validate(ptr / index, i, patch, e, context);
-				index++;
+				context.frames.back()[ptr.to_string()].items.insert(index++);
 			}
 		else {
 			auto item = items_.cbegin();
@@ -1355,18 +1386,21 @@ class array : public schema
 					break;
 
 				item_validator->validate(ptr / index, i, patch, e, context);
-				++index;
+				context.frames.back()[ptr.to_string()].items.insert(index++);
 			}
 		}
 
 		if (contains_) {
 			std::size_t count = 0;
+			std::size_t index = 0;
 			for (auto &item : instance) {
 				first_error_handler local_e;
-				contains_->validate(ptr / count, item, patch, local_e, context);
+				contains_->validate(ptr / index, item, patch, local_e, context);
 				if (!local_e) {
 					++count;
+					context.frames.back()[ptr.to_string()].items.insert(index);
 				}
+				++index;
 			}
 			if (count < minContains_) {
 				e.error(ptr, instance, "array does not contain required element as per 'contains'");
