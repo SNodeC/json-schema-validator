@@ -19,3 +19,23 @@ Baseline at f15f156c69bfea115267b189c0129462f6511913 (GCC, std::regex):
 
 All 95 pre-existing CTests passed, including their existing expected-failure
 configuration. None of those tests or expectations was changed for this baseline.
+
+## Corrected development base
+
+Owner-directed base correction: local `master` is upstream
+pboettch/json-schema-validator at d5199551f758ba067612979ae32ec35693640ccf.
+The draft-2020-12 changes were rebased onto it, retaining its URI, default,
+format-checking and test-harness fixes. All 108 upstream baseline CTests passed.
+The earlier table is the historical baseline before this base correction.
+
+With PCRE2 10.49, required draft-07 passes 972/972 and required 2020-12 passes
+1319/1319. With std::regex, draft-07 passes 972/972; 2020-12 passes 1310/1319.
+Its nine required failures are the Unicode property-escape groups in pattern
+and patternProperties. No network-dependent required test is omitted: external
+schemas come from each group's inline fixtures.
+
+Optional/format failures remain visible. In particular the existing upstream
+optional cross-draft case requests 2019-09, outside the two supported dialects;
+the implementation explicitly rejects it. Existing fixed-case exemptions have
+been removed where the implementation now passes. No expected validity or
+schema in the upstream data was changed.

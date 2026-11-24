@@ -1,3 +1,12 @@
+## Version 2.5.0 (unreleased)
+
+- Add 2020-12 dialect selection, offline metaschema validation, applicators,
+  anchors/dynamic references, vocabularies and evaluated-location tracking.
+- Keep draft-07 as the library default; expose configurable validation bounds
+  and terminate cyclic default lookup.
+- Add a PCRE2 UTF/UCP backend with std::regex fallback and pinned official
+  required/optional/format conformance tests.
+
 ## Release 2.4.1
 
 - Fix the email format check (`is_address`) on platforms where `char` is unsigned (arm64, ppc64el, s390x, ...) by @jamesjer in <https://github.com/pboettch/json-schema-validator/pull/376>

@@ -6,7 +6,8 @@
 
 This is a C++ library for validating JSON documents based on a
 [JSON Schema](http://json-schema.org/) which itself should validate with
-[draft-7 of JSON Schema Validation](http://json-schema.org/schema).
+[draft-07](https://json-schema.org/draft-07/) or
+[2020-12](https://json-schema.org/draft/2020-12/).
 
 First a disclaimer: *It is work in progress and
 contributions or hints or discussions are welcome.*
@@ -32,6 +33,74 @@ kept as a JSON-document and used again and again during validation, in version 2
 is parsed into compiled C++ objects which are then used during validation. There are surely
 still optimizations to be done, but validation speed has improved by factor 100
 or more.
+
+# New in version 2.5
+
+Draft-07 remains the default. A supported `$schema` declaration overrides the
+default for its resource. Select 2020-12 for schemas without a declaration:
+
+```C++
+nlohmann::json_schema::json_validator validator;
+validator.set_default_dialect(nlohmann::json_schema::schema_dialect::draft2020_12);
+validator.validate_schema(schema); // validates against the offline metaschema
+validator.set_root_schema(schema); // compiles the schema
+validator.validate(instance);
+```
+
+This is a minor version: it adds dialect/validation APIs and preserves draft-07
+as the default. There is no release tag created by this change.
+
+2020-12 includes prefixItems/items, dependentRequired/dependentSchemas,
+minContains/maxContains, reference siblings, anchors and dynamic references,
+and evaluated-location tracking for unevaluatedProperties/unevaluatedItems.
+Unknown extension keywords remain annotations. The supported dialects are
+draft-07 and 2020-12; other declared dialects are errors. The historical
+acceptance of draft-04 declarations during compilation is retained, selecting
+the old draft-07 behavior; it is not a draft-04 conformance claim, and
+`validate_schema` does not accept an unavailable draft-04 metaschema.
+
+`validate_schema` is explicit to preserve existing compilation callers. It
+rejects malformed schemas against their declared/default metaschema. All
+2020-12 metaschemas are bundled for offline use. Custom metaschemas and external
+references require an application loader; the library never fetches a URI.
+Local `$ref`, `$defs`, `$anchor`, `$dynamicRef`, and `$dynamicAnchor` resolve
+without a loader. Unknown required vocabularies are errors; unknown optional
+vocabularies are ignored.
+
+For 2020-12, format is an annotation by default. To assert formats, call
+`set_format_assertion(true)` and provide a format checker. The existing built-in
+checker still has optional format limitations; applications requiring every
+format assertion must supply a complete checker. Content annotations do not
+assert unless an application explicitly supplies a content checker. Draft-07
+retains its existing checker behavior.
+
+`set_validation_limits(validation_limits)` bounds compilation and validation.
+Defaults are depth 256, 100,000 schema evaluations per validation, and 10,000
+compiled schemas. Limits are per validator; validation counters, dynamic scope,
+and evaluated locations are per call. Cyclic default lookup terminates without
+inventing a default. Resource-limit exhaustion is an explicit exception.
+
+## Regular-expression backends
+
+CMake's `JSON_VALIDATOR_USE_PCRE2` defaults to ON. If pkg-config finds
+`libpcre2-8`, patterns and patternProperties use PCRE2 with UTF, UCP,
+ECMAScript escape/unset-backreference options, Unicode category alias handling,
+and bounded matching (100,000 match steps, depth 256). Otherwise they use
+`std::regex` with ECMAScript syntax. Set the option OFF to test the fallback.
+PCRE2 is an optional private link dependency; installed CMake consumers discover
+it through pkg-config when that backend was compiled in.
+
+PCRE2 is not a JavaScript regex engine. Unbounded variable-length lookbehind
+remains unsupported, and some optional whitespace/property/regex semantics
+differ. The std::regex backend lacks Unicode property escapes and matches
+multibyte characters differently. Use PCRE2 for the required 2020-12 Unicode
+cases and for bounded matching of untrusted patterns. Arbitrary-precision
+numeric validation remains outside the nlohmann::json number model.
+
+The pinned official suite is documented in
+[test/official-suite](test/official-suite/README.md). Required, optional, and
+format assertion cases are reported separately; optional failures are not
+counted as required passes.
 
 # Design goals
 
