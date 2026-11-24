@@ -26,7 +26,7 @@ Owner-directed base correction: local `master` is upstream
 pboettch/json-schema-validator at d5199551f758ba067612979ae32ec35693640ccf.
 The draft-2020-12 changes were rebased onto it, retaining its URI, default,
 format-checking and test-harness fixes. All 108 upstream baseline CTests passed.
-The earlier table is the historical baseline before this base correction.
+The earlier table is the historical baseline before this base correction. The corrected upstream draft-07 required baseline is 965/972 (seven failures), measured against the unchanged d5199551 static library with the same pinned compatibility/fixture runner and no new dialect APIs.
 
 With PCRE2 10.49, required draft-07 passes 972/972 and required 2020-12 passes
 1319/1319. With std::regex, draft-07 passes 972/972; 2020-12 passes 1310/1319.
