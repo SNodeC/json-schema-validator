@@ -141,6 +141,8 @@ namespace json_schema
 
 class root_schema
 {
+	schema_dialect default_dialect_ = schema_dialect::draft7;
+	schema_dialect dialect_ = schema_dialect::draft7;
 	schema_loader loader_;
 	format_checker format_check_;
 	content_checker content_check_;
@@ -175,6 +177,10 @@ public:
 	      content_check_(std::move(content))
 	{
 	}
+
+	void set_default_dialect(schema_dialect dialect) { default_dialect_ = dialect; }
+	schema_dialect dialect() const { return dialect_; }
+	void set_dialect(schema_dialect dialect) { dialect_ = dialect; }
 
 	format_checker &format_check() { return format_check_; }
 	content_checker &content_check() { return content_check_; }
@@ -276,6 +282,7 @@ public:
 	void set_root_schema(json sch)
 	{
 		files_.clear();
+		dialect_ = default_dialect_;
 		root_ = schema::make(sch, this, {}, {{"#"}});
 
 		// load all files which have not yet been loaded
@@ -1353,6 +1360,23 @@ std::shared_ptr<schema> schema::make(json &schema,
                                      const std::vector<std::string> &keys,
                                      std::vector<nlohmann::json_uri> uris)
 {
+	struct dialect_scope {
+		root_schema *root;
+		schema_dialect previous;
+		~dialect_scope() { root->set_dialect(previous); }
+	} scope{root, root->dialect()};
+
+	if (schema.is_object() && schema.contains("$schema")) {
+		const auto declared = json_uri(schema.at("$schema").get<std::string>()).location();
+		if (declared == "http://json-schema.org/draft-07/schema" || declared == "https://json-schema.org/draft-07/schema") {
+			root->set_dialect(schema_dialect::draft7);
+		} else if (declared == "https://json-schema.org/draft/2020-12/schema") {
+			root->set_dialect(schema_dialect::draft2020_12);
+		} else {
+			throw std::invalid_argument("unsupported schema dialect: " + declared);
+		}
+	}
+
 	// remove URIs which contain plain name identifiers, as sub-schemas cannot be referenced
 	for (auto uri = uris.begin(); uri != uris.end();)
 		if (uri->identifier() != "")
@@ -1489,6 +1513,11 @@ json_validator::json_validator(json &&schema,
 json_validator::json_validator(json_validator &&) = default;
 json_validator::~json_validator() = default;
 json_validator &json_validator::operator=(json_validator &&) = default;
+
+void json_validator::set_default_dialect(schema_dialect dialect)
+{
+	root_->set_default_dialect(dialect);
+}
 
 void json_validator::set_root_schema(const json &schema)
 {

@@ -57,6 +57,7 @@ int main(int argc, char **argv)
 				};
 				format_checker format = assertion ? default_string_format_check : format_checker([](const std::string &, const std::string &) {});
 				json_validator validator(loader, format);
+				validator.set_default_dialect(dialect == 7 ? schema_dialect::draft7 : schema_dialect::draft2020_12);
 				try {
 					validator.set_root_schema(group.at("schema"));
 				} catch (const std::exception &e) {

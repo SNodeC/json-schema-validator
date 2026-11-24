@@ -131,6 +131,11 @@ namespace json_schema
 
 extern JSON_SCHEMA_VALIDATOR_API json draft7_schema_builtin;
 
+enum class schema_dialect {
+	draft7,
+	draft2020_12
+};
+
 typedef std::function<void(const json_uri & /*id*/, json & /*value*/)> schema_loader;
 typedef std::function<void(const std::string & /*format*/, const std::string & /*value*/)> format_checker;
 typedef std::function<void(const std::string & /*contentEncoding*/, const std::string & /*contentMediaType*/, const json & /*instance*/)> content_checker;
@@ -181,6 +186,9 @@ public:
 	json_validator &operator=(json_validator const &) = delete;
 
 	~json_validator();
+
+	// Applies to subsequently compiled schemas without a declared $schema.
+	void set_default_dialect(schema_dialect);
 
 	// insert and set the root-schema
 	void set_root_schema(const json &);
