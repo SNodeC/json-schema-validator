@@ -196,6 +196,10 @@ public:
 	// Applies to subsequently compiled schemas without a declared $schema.
 	void set_default_dialect(schema_dialect);
 	void set_validation_limits(const validation_limits &);
+	void set_format_assertion(bool);
+
+	// Throws when the schema does not satisfy its declared/default metaschema.
+	void validate_schema(const json &) const;
 
 	// insert and set the root-schema
 	void set_root_schema(const json &);

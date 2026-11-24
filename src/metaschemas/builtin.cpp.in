@@ -1,0 +1,27 @@
+/*
+ * JSON schema validator for JSON for modern C++
+ * Copyright (c) 2026 Volker Christian.
+ * SPDX-License-Identifier: MIT
+ */
+#include <nlohmann/json-schema.hpp>
+
+namespace nlohmann {
+namespace json_schema {
+
+bool builtin_schema(const json_uri &uri, json &value)
+{
+	static const std::map<std::string, json> schemas = {
+@metaschema_entries@
+	};
+	const auto found = schemas.find(uri.location());
+	const bool available = found != schemas.end();
+	if (available) {
+		value = found->second;
+	} else if (uri.location() == "http://json-schema.org/draft-07/schema" || uri.location() == "https://json-schema.org/draft-07/schema") {
+		value = draft7_schema_builtin;
+	}
+	return available || uri.location() == "http://json-schema.org/draft-07/schema" || uri.location() == "https://json-schema.org/draft-07/schema";
+}
+
+} // namespace json_schema
+} // namespace nlohmann

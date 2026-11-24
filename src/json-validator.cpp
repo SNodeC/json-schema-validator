@@ -159,8 +159,12 @@ namespace nlohmann
 namespace json_schema
 {
 
+bool builtin_schema(const json_uri &, json &);
+
 class root_schema
 {
+	bool format_assertion_ = false;
+	std::set<std::string> vocabularies_{"core", "applicator", "validation", "unevaluated", "meta-data", "format-annotation", "content"};
 	validation_limits limits_;
 	std::size_t schema_count_ = 0;
 	std::map<std::string, std::map<std::string, std::weak_ptr<schema>>> dynamic_anchors_;
@@ -204,6 +208,65 @@ public:
 
 	void set_default_dialect(schema_dialect dialect) { default_dialect_ = dialect; }
 	void set_validation_limits(const validation_limits &limits) { limits_ = limits; }
+	void set_format_assertion(bool enabled) { format_assertion_ = enabled; }
+	bool format_assertion() const { return dialect_ == schema_dialect::draft7 || format_assertion_ || vocabularies_.count("format-assertion") != 0; }
+	const std::set<std::string> &vocabularies() const { return vocabularies_; }
+	void set_vocabularies(std::set<std::string> value) { vocabularies_ = std::move(value); }
+	bool enabled(const std::string &vocabulary) const { return dialect_ == schema_dialect::draft7 || vocabularies_.count(vocabulary) != 0; }
+
+	void load_schema(const json_uri &uri, json &value) const
+	{
+		if (!builtin_schema(uri, value)) {
+			if (loader_) {
+				loader_(uri, value);
+			} else {
+				throw std::invalid_argument("external schema reference '" + uri.location() + "' needs loading, but no loader callback given");
+			}
+		}
+	}
+
+	void select_dialect(const std::string &declared, std::size_t depth = 0)
+	{
+		if (depth >= limits_.max_depth) {
+			throw std::invalid_argument("metaschema dialect recursion limit exceeded");
+		}
+		if (declared == "http://json-schema.org/draft-07/schema" || declared == "https://json-schema.org/draft-07/schema" || declared == "http://json-schema.org/draft-04/schema") {
+			dialect_ = schema_dialect::draft7;
+		} else if (declared == "https://json-schema.org/draft/2020-12/schema") {
+			dialect_ = schema_dialect::draft2020_12;
+			vocabularies_ = {"core", "applicator", "validation", "unevaluated", "meta-data", "format-annotation", "content"};
+		} else {
+			json meta;
+			load_schema(declared, meta);
+			select_dialect(json_uri(meta.at("$schema").get<std::string>()).location(), depth + 1);
+			if (meta.contains("$vocabulary")) {
+				vocabularies_.clear();
+				const std::string prefix = "https://json-schema.org/draft/2020-12/vocab/";
+				const std::set<std::string> supported{"core", "applicator", "validation", "unevaluated", "meta-data", "format-annotation", "format-assertion", "content"};
+				for (const auto &vocabulary : meta.at("$vocabulary").items()) {
+					const auto name = vocabulary.key().substr(0, prefix.size()) == prefix ? vocabulary.key().substr(prefix.size()) : "";
+					if (supported.count(name) != 0) {
+						vocabularies_.insert(name);
+					} else if (vocabulary.value().get<bool>()) {
+						throw std::invalid_argument("unsupported required vocabulary: " + vocabulary.key());
+					}
+				}
+			}
+		}
+	}
+
+	void validate_schema(const json &value) const
+	{
+		std::string uri = default_dialect_ == schema_dialect::draft7 ? "http://json-schema.org/draft-07/schema" : "https://json-schema.org/draft/2020-12/schema";
+		if (value.is_object() && value.contains("$schema")) {
+			uri = value.at("$schema").get<std::string>();
+		}
+		json_validator validator(loader_, [](const std::string &, const std::string &) {});
+		validator.set_default_dialect(default_dialect_);
+		validator.set_validation_limits(limits_);
+		validator.set_root_schema(json{{"$ref", uri}});
+		validator.validate(value);
+	}
 	const validation_limits &limits() const { return limits_; }
 	void count_schema()
 	{
@@ -347,16 +410,10 @@ public:
 
 			for (auto &loc : locations) {
 				if (files_[loc].schemas.size() == 0) { // nothing has been loaded for this file
-					if (loader_) {
-						json loaded_schema;
-
-						loader_(loc, loaded_schema);
-
-						schema::make(loaded_schema, this, {}, {{loc}});
-						new_schema_loaded = true;
-					} else {
-						throw std::invalid_argument("external schema reference '" + loc + "' needs loading, but no loader callback given");
-					}
+					json loaded_schema;
+					load_schema(loc, loaded_schema);
+					schema::make(loaded_schema, this, {}, {{loc}});
+					new_schema_loaded = true;
 				}
 			}
 
@@ -656,6 +713,7 @@ class type_schema : public schema
 	std::shared_ptr<schema> reference_;
 	std::shared_ptr<schema> unevaluated_properties_;
 	std::shared_ptr<schema> unevaluated_items_;
+	std::shared_ptr<schema> integer_float_;
 
 	static std::shared_ptr<schema> make(json &schema,
 	                                    json::value_t type,
@@ -676,7 +734,7 @@ class type_schema : public schema
 		if (!type && instance.is_number_float()) {
 			const double value = instance.get<double>();
 			if (std::isfinite(value) && std::floor(value) == value) {
-				type = type_[static_cast<uint8_t>(json::value_t::number_integer)];
+				type = integer_float_;
 			}
 		}
 
@@ -821,6 +879,9 @@ public:
 			sch.erase(attr);
 		}
 
+		if (type_[static_cast<uint8_t>(json::value_t::number_integer)] && !type_[static_cast<uint8_t>(json::value_t::number_float)]) {
+			integer_float_ = type_schema::make(sch, json::value_t::number_float, root, uris, known_keywords);
+		}
 		for (auto &key : known_keywords)
 			sch.erase(key);
 
@@ -1008,6 +1069,9 @@ public:
 			sch.erase(attr);
 		}
 
+		if (root->dialect() == schema_dialect::draft2020_12 && root->content_check() == nullptr) {
+			std::get<0>(content_) = false;
+		}
 		if (std::get<0>(content_) == true && root_->content_check() == nullptr) {
 			throw std::invalid_argument{"schema contains contentEncoding/contentMediaType but content checker was not set"};
 		}
@@ -1023,7 +1087,7 @@ public:
 #endif
 
 		attr = sch.find("format");
-		if (attr != sch.end()) {
+		if (attr != sch.end() && root->format_assertion()) {
 			if (root_->format_check() == nullptr)
 				throw std::invalid_argument{"a format checker was not provided but a format keyword for this string is present: " + attr.value().get<std::string>()};
 
@@ -1049,12 +1113,12 @@ class numeric : public schema
 	{
 		double res = std::remainder(x, multipleOf_.second);
 		double multiple = std::fabs(static_cast<double>(x) / multipleOf_.second);
-		if (multiple > 1) {
+		if (std::isfinite(multiple) && multiple > 1) {
 			res = res / multiple;
 		}
 		double eps = std::nextafter(x, 0) - static_cast<double>(x);
 
-		return std::fabs(res) > std::fabs(eps);
+		return std::isfinite(multiple) ? std::fabs(res) > std::fabs(eps) : res != 0;
 	}
 
 	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override
@@ -1562,17 +1626,32 @@ std::shared_ptr<schema> schema::make(json &schema,
 	struct dialect_scope {
 		root_schema *root;
 		schema_dialect previous;
-		~dialect_scope() { root->set_dialect(previous); }
-	} scope{root, root->dialect()};
+		std::set<std::string> vocabularies;
+		~dialect_scope()
+		{
+			root->set_dialect(previous);
+			root->set_vocabularies(std::move(vocabularies));
+		}
+	} scope{root, root->dialect(), root->vocabularies()};
 
 	if (schema.is_object() && schema.contains("$schema")) {
-		const auto declared = json_uri(schema.at("$schema").get<std::string>()).location();
-		if (declared == "http://json-schema.org/draft-07/schema" || declared == "https://json-schema.org/draft-07/schema" || declared == "http://json-schema.org/draft-04/schema") {
-			root->set_dialect(schema_dialect::draft7);
-		} else if (declared == "https://json-schema.org/draft/2020-12/schema") {
-			root->set_dialect(schema_dialect::draft2020_12);
-		} else {
-			throw std::invalid_argument("unsupported schema dialect: " + declared);
+		root->select_dialect(json_uri(schema.at("$schema").get<std::string>()).location());
+	}
+	json annotations = json::object();
+	if (schema.is_object()) {
+		const std::map<std::string, std::vector<std::string>> keywords = {
+		    {"validation", {"type", "enum", "const", "multipleOf", "maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum", "maxLength", "minLength", "pattern", "maxItems", "minItems", "uniqueItems", "minContains", "maxContains", "maxProperties", "minProperties", "required", "dependentRequired"}},
+		    {"applicator", {"allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependentSchemas", "prefixItems", "items", "contains", "properties", "patternProperties", "additionalProperties", "propertyNames"}},
+		    {"unevaluated", {"unevaluatedProperties", "unevaluatedItems"}}};
+		for (const auto &vocabulary : keywords) {
+			if (!root->enabled(vocabulary.first)) {
+				for (const auto &keyword : vocabulary.second) {
+					if (schema.contains(keyword)) {
+						annotations[keyword] = schema.at(keyword);
+						schema.erase(keyword);
+					}
+				}
+			}
 		}
 	}
 
@@ -1670,6 +1749,9 @@ std::shared_ptr<schema> schema::make(json &schema,
 		throw std::invalid_argument("invalid JSON-type for a schema for " + uris[0].to_string() + ", expected: boolean or object");
 	}
 
+	if (schema.is_object()) {
+		schema.update(annotations);
+	}
 	sch->set_resource(uris.back().location());
 	if (!anchor.empty()) {
 		root->insert(uris.back().derive("#" + anchor), sch);
@@ -1741,6 +1823,16 @@ json_validator::json_validator(json &&schema,
 json_validator::json_validator(json_validator &&) = default;
 json_validator::~json_validator() = default;
 json_validator &json_validator::operator=(json_validator &&) = default;
+
+void json_validator::set_format_assertion(bool enabled)
+{
+	root_->set_format_assertion(enabled);
+}
+
+void json_validator::validate_schema(const json &schema) const
+{
+	root_->validate_schema(schema);
+}
 
 void json_validator::set_validation_limits(const validation_limits &limits)
 {

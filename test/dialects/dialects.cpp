@@ -77,6 +77,16 @@ int main()
 	ok = ok && !accepts(discarded, {{"a", 1}, {"b", 2}}, modern);
 	const json evaluated_items = {{"contains", {{"type", "integer"}}}, {"unevaluatedItems", false}};
 	ok = ok && accepts(evaluated_items, {1, 2}, modern) && !accepts(evaluated_items, {1, "x"}, modern);
+	json_validator schema_checker;
+	schema_checker.set_default_dialect(modern);
+	schema_checker.validate_schema(evaluated);
+	bool malformed = false;
+	try {
+		schema_checker.validate_schema({{"minLength", -1}});
+	} catch (const std::invalid_argument &) {
+		malformed = true;
+	}
+	ok = ok && malformed;
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}

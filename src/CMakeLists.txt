@@ -65,3 +65,15 @@ if (JSON_VALIDATOR_INSTALL)
             PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/nlohmann COMPONENT nlohmann_json_schema_validator_Development
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT nlohmann_json_schema_validator_Runtime)
 endif ()
+
+# Embed the authoritative JSON documents at configure time for offline use.
+file(GLOB_RECURSE metaschemas CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/metaschemas/draft2020-12/*.json")
+set(metaschema_entries "")
+foreach(metaschema IN LISTS metaschemas)
+    file(RELATIVE_PATH name "${CMAKE_CURRENT_SOURCE_DIR}/metaschemas/draft2020-12" "${metaschema}")
+    string(REGEX REPLACE "[.]json$" "" name "${name}")
+    file(READ "${metaschema}" content)
+    string(APPEND metaschema_entries "{\"https://json-schema.org/draft/2020-12/${name}\", json::parse(R\"META(${content})META\")},\n")
+endforeach()
+configure_file(metaschemas/builtin.cpp.in "${CMAKE_CURRENT_BINARY_DIR}/json-schema-2020-12.cpp" @ONLY)
+target_sources(nlohmann_json_schema_validator PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/json-schema-2020-12.cpp")

@@ -56,9 +56,7 @@ if(JSON_SCHEMA_TEST_SUITE_PATH)
 
         # optional tests which fail completely, single failing test cases are in known-failures.json
         set_tests_properties(
-            JSON-Suite::Optional::bignum
             JSON-Suite::Optional::non-bmp-regex
-            JSON-Suite::Optional::float-overflow
 
             JSON-Suite::Optional::ecmascript-regex
             JSON-Suite::Optional::Format::idn-hostname
