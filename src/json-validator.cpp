@@ -100,16 +100,25 @@ class schema_ref : public schema
 
 	const json &default_value(const json::json_pointer &ptr, const json &instance, error_handler &e) const override final
 	{
-		if (!default_value_.is_null())
-			return default_value_;
-
-		auto target = target_.lock();
-		if (target)
-			return target->default_value(ptr, instance, e);
-
-		e.error(ptr, instance, "unresolved or freed schema-reference " + id_);
-
-		return default_value_;
+		const json *result = &default_value_;
+		const schema_ref *reference = this;
+		std::set<const schema_ref *> visited;
+		while (reference && result->is_null() && visited.insert(reference).second) {
+			result = &reference->default_value_;
+			if (result->is_null()) {
+				auto target = reference->target_.lock();
+				if (target) {
+					reference = dynamic_cast<const schema_ref *>(target.get());
+					if (!reference) {
+						result = &target->default_value(ptr, instance, e);
+					}
+				} else {
+					e.error(ptr, instance, "unresolved or freed schema-reference " + reference->id_);
+					reference = nullptr;
+				}
+			}
+		}
+		return *result;
 	}
 
 protected:
@@ -161,6 +170,7 @@ class root_schema
 	std::set<std::string> vocabularies_{"core", "applicator", "validation", "unevaluated", "meta-data", "format-annotation", "content"};
 	validation_limits limits_;
 	std::size_t schema_count_ = 0;
+	std::size_t compile_depth_ = 0;
 	std::map<std::string, std::map<std::string, std::weak_ptr<schema>>> dynamic_anchors_;
 	schema_dialect default_dialect_ = schema_dialect::draft7;
 	schema_dialect dialect_ = schema_dialect::draft7;
@@ -264,10 +274,13 @@ public:
 	const validation_limits &limits() const { return limits_; }
 	void count_schema()
 	{
-		if (++schema_count_ > limits_.max_schemas) {
+		if (compile_depth_ >= limits_.max_depth || schema_count_ >= limits_.max_schemas) {
 			throw std::invalid_argument("schema compilation limit exceeded");
 		}
+		++schema_count_;
+		++compile_depth_;
 	}
+	void leave_schema() { --compile_depth_; }
 	void insert_dynamic(const std::string &resource, const std::string &name, const std::shared_ptr<schema> &value)
 	{
 		dynamic_anchors_[resource][name] = value;
@@ -309,8 +322,11 @@ public:
 		}
 	}
 
-	void insert_unknown_keyword(const json_uri &uri, const std::string &key, json &value)
+	void insert_unknown_keyword(const json_uri &uri, const std::string &key, json &value, std::size_t depth = 0)
 	{
+		if (depth >= limits_.max_depth) {
+			throw std::invalid_argument("schema annotation depth limit exceeded");
+		}
 		auto &file = get_or_create_file(uri.location());
 		auto new_uri = uri.append(key);
 		auto fragment = new_uri.pointer();
@@ -350,7 +366,7 @@ public:
 		// recursively add possible subschemas of unknown keywords
 		if (value.type() == json::value_t::object)
 			for (auto &subsch : value.items())
-				insert_unknown_keyword(new_uri, subsch.key(), subsch.value());
+				insert_unknown_keyword(new_uri, subsch.key(), subsch.value(), depth + 1);
 	}
 
 	std::shared_ptr<schema> get_or_create_ref(const json_uri &uri)
@@ -390,6 +406,7 @@ public:
 		files_.clear();
 		dynamic_anchors_.clear();
 		schema_count_ = 0;
+		compile_depth_ = 0;
 		dialect_ = default_dialect_;
 		root_ = schema::make(sch, this, {}, {{"#"}});
 
@@ -1484,15 +1501,15 @@ class array : public schema
 
 		if (contains_) {
 			std::size_t count = 0;
-			std::size_t index = 0;
+			std::size_t contains_index = 0;
 			for (auto &item : instance) {
 				first_error_handler local_e;
-				contains_->validate(ptr / index, item, patch, local_e, context);
+				contains_->validate(ptr / contains_index, item, patch, local_e, context);
 				if (!local_e) {
 					++count;
-					context.frames.back()[ptr.to_string()].items.insert(index);
+					context.frames.back()[ptr.to_string()].items.insert(contains_index);
 				}
-				++index;
+				++contains_index;
 			}
 			if (count < minContains_) {
 				e.error(ptr, instance, "array does not contain required element as per 'contains'");
@@ -1623,6 +1640,7 @@ std::shared_ptr<schema> schema::make(json &schema,
 		std::set<std::string> vocabularies;
 		~dialect_scope()
 		{
+			root->leave_schema();
 			root->set_dialect(previous);
 			root->set_vocabularies(std::move(vocabularies));
 		}

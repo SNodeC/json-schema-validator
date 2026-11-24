@@ -87,6 +87,18 @@ int main()
 		malformed = true;
 	}
 	ok = ok && malformed;
+	ok = ok && accepts(json::parse(R"({"properties":{"loop":{"$ref":"#/properties/loop"}}})"), json::object());
+	json deep = true;
+	for (int i = 0; i < 20; ++i) {
+		deep = {{"properties", {{"nested", deep}}}};
+	}
+	bool compile_exhausted = false;
+	try {
+		bounded.set_root_schema(deep);
+	} catch (const std::invalid_argument &) {
+		compile_exhausted = true;
+	}
+	ok = ok && compile_exhausted;
 	if (!ok) {
 		std::cerr << "dialect/applicator regression failed\n";
 	}
