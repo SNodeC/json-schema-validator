@@ -536,6 +536,7 @@ class type_schema : public schema
 	std::vector<std::shared_ptr<schema>> type_;
 	std::pair<bool, json> enum_, const_;
 	std::vector<std::shared_ptr<schema>> logic_;
+	std::shared_ptr<schema> reference_;
 
 	static std::shared_ptr<schema> make(json &schema,
 	                                    json::value_t type,
@@ -547,6 +548,10 @@ class type_schema : public schema
 
 	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const override final
 	{
+		if (reference_) {
+			reference_->validate(ptr, instance, patch, e);
+		}
+
 		// depending on the type of instance run the type specific validator - if present
 		auto type = type_[static_cast<uint8_t>(instance.type())];
 
@@ -606,6 +611,8 @@ protected:
 	};
 
 public:
+	void set_reference(std::shared_ptr<schema> reference) { reference_ = std::move(reference); }
+
 	type_schema(json &sch,
 	            root_schema *root,
 	            const std::vector<nlohmann::json_uri> &uris)
@@ -1051,7 +1058,7 @@ class object : public schema
 #endif
 	std::shared_ptr<schema> additionalProperties_;
 
-	std::map<std::string, std::shared_ptr<schema>> dependencies_;
+	std::multimap<std::string, std::shared_ptr<schema>> dependencies_;
 
 	std::shared_ptr<schema> propertyNames_;
 
@@ -1168,7 +1175,8 @@ public:
 			sch.erase(attr);
 		}
 
-		attr = sch.find("dependencies");
+		const std::string dependencies = root->dialect() == schema_dialect::draft7 ? "dependencies" : "dependentSchemas";
+		attr = sch.find(dependencies);
 		if (attr != sch.end()) {
 			for (auto &dep : attr.value().items())
 				switch (dep.value().type()) {
@@ -1180,10 +1188,17 @@ public:
 
 				default:
 					dependencies_.emplace(dep.key(),
-					                      schema::make(dep.value(), root, {"dependencies", dep.key()}, uris));
+					                      schema::make(dep.value(), root, {dependencies, dep.key()}, uris));
 					break;
 				}
 			sch.erase(attr);
+		}
+
+		if (root->dialect() == schema_dialect::draft2020_12 && sch.contains("dependentRequired")) {
+			for (auto &dep : sch.at("dependentRequired").items()) {
+				dependencies_.emplace(dep.key(), std::make_shared<required>(dep.value().get<std::vector<std::string>>(), root));
+			}
+			sch.erase("dependentRequired");
 		}
 
 		attr = sch.find("propertyNames");
@@ -1211,6 +1226,8 @@ class array : public schema
 	std::shared_ptr<schema> additionalItems_;
 
 	std::shared_ptr<schema> contains_;
+	std::size_t minContains_ = 1;
+	std::pair<bool, std::size_t> maxContains_{false, 0};
 
 	void validate(const json::json_pointer &ptr, const json &instance, json_patch &patch, error_handler &e) const override
 	{
@@ -1249,21 +1266,25 @@ class array : public schema
 					break;
 
 				item_validator->validate(ptr / index, i, patch, e);
+				++index;
 			}
 		}
 
 		if (contains_) {
-			bool contained = false;
+			std::size_t count = 0;
 			for (auto &item : instance) {
 				first_error_handler local_e;
-				contains_->validate(ptr, item, patch, local_e);
+				contains_->validate(ptr / count, item, patch, local_e);
 				if (!local_e) {
-					contained = true;
-					break;
+					++count;
 				}
 			}
-			if (!contained)
+			if (count < minContains_) {
 				e.error(ptr, instance, "array does not contain required element as per 'contains'");
+			}
+			if (maxContains_.first && count > maxContains_.second) {
+				e.error(ptr, instance, "array has too many matching elements as per 'maxContains'");
+			}
 		}
 	}
 
@@ -1289,25 +1310,45 @@ public:
 			sch.erase(attr);
 		}
 
-		attr = sch.find("items");
-		if (attr != sch.end()) {
-
-			if (attr.value().type() == json::value_t::array) {
-				size_t c = 0;
-				for (auto &subsch : attr.value())
-					items_.push_back(schema::make(subsch, root, {"items", std::to_string(c++)}, uris));
-
-				auto attr_add = sch.find("additionalItems");
-				if (attr_add != sch.end()) {
-					additionalItems_ = schema::make(attr_add.value(), root, {"additionalItems"}, uris);
-					sch.erase(attr_add);
+		if (root->dialect() == schema_dialect::draft2020_12) {
+			if (sch.contains("prefixItems")) {
+				std::size_t index = 0;
+				for (auto &subsch : sch.at("prefixItems")) {
+					items_.push_back(schema::make(subsch, root, {"prefixItems", std::to_string(index++)}, uris));
 				}
+				sch.erase("prefixItems");
+			}
+			if (sch.contains("items")) {
+				additionalItems_ = schema::make(sch.at("items"), root, {"items"}, uris);
+				sch.erase("items");
+			}
+			minContains_ = sch.value("minContains", std::size_t(1));
+			if (sch.contains("maxContains")) {
+				maxContains_ = {true, sch.at("maxContains").get<std::size_t>()};
+			}
+			sch.erase("minContains");
+			sch.erase("maxContains");
+		} else {
+			attr = sch.find("items");
+			if (attr != sch.end()) {
 
-			} else if (attr.value().type() == json::value_t::object ||
-			           attr.value().type() == json::value_t::boolean)
-				items_schema_ = schema::make(attr.value(), root, {"items"}, uris);
+				if (attr.value().type() == json::value_t::array) {
+					size_t c = 0;
+					for (auto &subsch : attr.value())
+						items_.push_back(schema::make(subsch, root, {"items", std::to_string(c++)}, uris));
 
-			sch.erase(attr);
+					auto attr_add = sch.find("additionalItems");
+					if (attr_add != sch.end()) {
+						additionalItems_ = schema::make(attr_add.value(), root, {"additionalItems"}, uris);
+						sch.erase(attr_add);
+					}
+
+				} else if (attr.value().type() == json::value_t::object ||
+				           attr.value().type() == json::value_t::boolean)
+					items_schema_ = schema::make(attr.value(), root, {"items"}, uris);
+
+				sch.erase(attr);
+			}
 		}
 
 		attr = sch.find("contains");
@@ -1368,7 +1409,7 @@ std::shared_ptr<schema> schema::make(json &schema,
 
 	if (schema.is_object() && schema.contains("$schema")) {
 		const auto declared = json_uri(schema.at("$schema").get<std::string>()).location();
-		if (declared == "http://json-schema.org/draft-07/schema" || declared == "https://json-schema.org/draft-07/schema") {
+		if (declared == "http://json-schema.org/draft-07/schema" || declared == "https://json-schema.org/draft-07/schema" || declared == "http://json-schema.org/draft-04/schema") {
 			root->set_dialect(schema_dialect::draft7);
 		} else if (declared == "https://json-schema.org/draft/2020-12/schema") {
 			root->set_dialect(schema_dialect::draft2020_12);
@@ -1428,8 +1469,17 @@ std::shared_ptr<schema> schema::make(json &schema,
 			// so this is the origial URI for this reference, the $ref-value has thus be resolved from it
 			auto id = uris.back().derive(attr.value().get<std::string>());
 			sch = root->get_or_create_ref(id);
+			if (root->dialect() == schema_dialect::draft2020_12) {
+				schema.erase(attr);
+				auto sibling = std::make_shared<type_schema>(schema, root, uris);
+				sibling->set_reference(sch);
+				sch = sibling;
+				attr = schema.end();
+			}
 
-			schema.erase(attr);
+			if (attr != schema.end()) {
+				schema.erase(attr);
+			}
 
 			// special case where we break draft-7 and allow overriding of properties when a $ref is used
 			attr = schema.find("default");
