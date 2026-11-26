@@ -752,7 +752,7 @@ class type_schema : public schema
 		auto type = type_[static_cast<uint8_t>(instance.type())];
 		if (!type && instance.is_number_float()) {
 			const double value = instance.get<double>();
-			if (std::isfinite(value) && std::floor(value) == value) {
+			if (std::isfinite(value) && std::floor(value) >= value) {
 				type = integer_float_;
 			}
 		}
@@ -1149,7 +1149,7 @@ class numeric : public schema
 		}
 		double eps = std::nextafter(x, 0) - static_cast<double>(x);
 
-		return std::isfinite(multiple) ? std::fabs(res) > std::fabs(eps) : res != 0;
+		return std::isfinite(multiple) ? std::fabs(res) > std::fabs(eps) : std::fpclassify(res) != FP_ZERO;
 	}
 
 	void validate_(const json::json_pointer &ptr, const json &instance, json_patch &, error_handler &e, validation_context &) const override
@@ -1158,9 +1158,9 @@ class numeric : public schema
 
 		std::ostringstream oss;
 
-		if (multipleOf_.first && value != 0) // zero is multiple of everything
-			if (violates_multiple_of(value))
-				oss << "instance is not a multiple of " << json(multipleOf_.second);
+		if (multipleOf_.first && std::fpclassify(value) != FP_ZERO && violates_multiple_of(value)) {
+			oss << "instance is not a multiple of " << json(multipleOf_.second);
+		}
 
 		if (maximum_.first) {
 			if (exclusiveMaximum_ && value >= maximum_.second)
